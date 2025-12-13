@@ -3,6 +3,8 @@ from PIL import Image
 import pandas as pd
 import json
 import time
+import base64
+import io
 from openai import OpenAI
 
 # ==========================================
@@ -22,10 +24,12 @@ if "OPENAI_API_KEY" not in st.secrets:
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # ==========================================
-# 3. SESSION STATE
+# 3. YARDIMCI FONKSİYONLAR
 # ==========================================
-if "sinif_verileri" not in st.session_state:
-    st.session_state.sinif_verileri = []
+def image_to_base64(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def hafizayi_sil():
     st.session_state.sinif_verileri = []
@@ -33,7 +37,13 @@ def hafizayi_sil():
     st.rerun()
 
 # ==========================================
-# 4. SOL MENÜ
+# 4. SESSION STATE
+# ==========================================
+if "sinif_verileri" not in st.session_state:
+    st.session_state.sinif_verileri = []
+
+# ==========================================
+# 5. SOL MENÜ
 # ==========================================
 with st.sidebar:
     st.header("⚙️ Sınıf Durumu")
@@ -47,7 +57,7 @@ with st.sidebar:
     st.caption("© Sinan Sayılır")
 
 # ==========================================
-# 5. AYARLAR
+# 6. AYARLAR
 # ==========================================
 col1, col2 = st.columns(2)
 
@@ -84,7 +94,7 @@ with col2:
         st.success(f"📄 {len(uploaded_files)} dosya yüklendi")
 
 # ==========================================
-# 6. OKUMA & PUANLAMA
+# 7. OKUMA & PUANLAMA
 # ==========================================
 st.markdown("---")
 
@@ -114,7 +124,7 @@ if st.button("🚀 KAĞITLARI OKU VE PUANLA", use_container_width=True):
         prompt = f"""
 Bu bir sınav kağıdıdır.
 
-GÖREVLERİN:
+GÖREVLER:
 1. Öğrencinin ad-soyad ve numarasını bul.
 2. Tüm soruları değerlendir.
 3. Her soru için puan ver.
@@ -138,15 +148,25 @@ PUANLAMA KRİTERİ:
 """
 
         try:
+            content = [{"type": "input_text", "text": prompt}]
+
+            if cevap_img:
+                content.append({
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{image_to_base64(cevap_img)}"
+                })
+
+            for img in images:
+                content.append({
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{image_to_base64(img)}"
+                })
+
             response = client.responses.create(
                 model="gpt-4.1",
                 input=[{
                     "role": "user",
-                    "content": (
-                        [{"type": "input_text", "text": prompt}] +
-                        ([{"type": "input_image", "image": cevap_img}] if cevap_img else []) +
-                        [{"type": "input_image", "image": img} for img in images]
-                    )
+                    "content": content
                 }]
             )
 
@@ -179,7 +199,7 @@ PUANLAMA KRİTERİ:
     durum.success("✅ Tüm kağıtlar işlendi")
 
 # ==========================================
-# 7. PUAN ÇİZELGESİ
+# 8. PUAN ÇİZELGESİ
 # ==========================================
 if st.session_state.sinif_verileri:
     st.markdown("## 📊 Değerlendirme Çizelgesi")
