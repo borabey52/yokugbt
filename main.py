@@ -1,200 +1,190 @@
 import streamlit as st
-import google.generativeai as genai
+from openai import OpenAI
 from PIL import Image
 import json
 import time
+import base64
+from io import BytesIO
 
 # ==========================================
-# 1. AYARLAR & TASARIM (CSS DÜZELTİLDİ)
+# 1. AYARLAR & TASARIM
 # ==========================================
 st.set_page_config(page_title="AI Toplu Sınav Okuma", layout="wide")
 
 st.markdown("""
-    <style>
-    /* SOL MENÜ TASARIMI */
-    [data-testid="stSidebarNav"] a {
-        background-color: #f0f2f6; padding: 15px; border-radius: 10px;
-        margin-bottom: 10px; text-decoration: none !important;
-        color: #31333F !important; font-weight: 700; display: block;
-        text-align: center; border: 1px solid #dcdcdc; transition: all 0.3s;
-    }
-    [data-testid="stSidebarNav"] a:hover {
-        background-color: #e6e9ef; transform: scale(1.02);
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-color: #b0b0b0;
-    }
-    h1 { font-size: 2.5rem !important; font-weight: 800 !important; color: #1E3A8A; }
-    
-    /* --- KAMERA BUTONU DÜZELTMESİ (SADECE KAMERAYI ETKİLER) --- */
-    /* Diğer butonları bozmasın diye 'data-testid="stCameraInput"' içine kilitledik */
-    
-    div[data-testid="stCameraInput"] button[kind="primary"] { 
-        color: transparent !important; 
-    }
-    div[data-testid="stCameraInput"] button[kind="primary"]::after {
-        content: "📸 FOTOĞRAFI ÇEK"; 
-        color: white; 
-        font-weight: bold;
-        position: absolute; left: 0; right: 0; top: 0; bottom: 0;
-        display: flex; align-items: center; justify-content: center;
-    }
-    
-    div[data-testid="stCameraInput"] button[kind="secondary"] { 
-        color: transparent !important; 
-    }
-    div[data-testid="stCameraInput"] button[kind="secondary"]::after {
-        content: "🔄 Yeniden Çek"; 
-        color: #31333F; 
-        font-weight: bold;
-        position: absolute; left: 0; right: 0; top: 0; bottom: 0;
-        display: flex; align-items: center; justify-content: center;
-    }
-    </style>
+<style>
+[data-testid="stSidebarNav"] a {
+    background-color: #f0f2f6;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    color: #31333F !important;
+    font-weight: 700;
+    text-align: center;
+    border: 1px solid #dcdcdc;
+}
+h1 { font-size: 2.4rem !important; font-weight: 800 !important; color: #1E3A8A; }
+</style>
 """, unsafe_allow_html=True)
 
-# API Anahtarı
-if "GOOGLE_API_KEY" in st.secrets:
-    SABIT_API_KEY = st.secrets["GOOGLE_API_KEY"]
-else:
-    SABIT_API_KEY = ""
+# ==========================================
+# 2. API ANAHTARI
+# ==========================================
+if "OPENAI_API_KEY" not in st.secrets:
+    st.error("❌ OPENAI_API_KEY Streamlit secrets içine eklenmemiş.")
+    st.stop()
 
-# --- HAFIZA ---
-if 'sinif_verileri' not in st.session_state: st.session_state.sinif_verileri = []
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-def tam_hafiza_temizligi():
+# ==========================================
+# 3. HAFIZA
+# ==========================================
+if "sinif_verileri" not in st.session_state:
     st.session_state.sinif_verileri = []
-    st.toast("🧹 Sınıf listesi temizlendi!", icon="🗑️")
+
+def hafiza_temizle():
+    st.session_state.sinif_verileri = []
+    st.toast("🧹 Liste temizlendi")
     st.rerun()
 
+# ==========================================
+# 4. YARDIMCI FONKSİYONLAR
+# ==========================================
+def image_to_base64(img: Image.Image) -> str:
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
 def extract_json(text):
-    text = text.strip()
     try:
-        if "```json" in text: text = text.split("```json")[1].split("```")[0]
-        elif "```" in text: text = text.split("```")[1].split("```")[0]
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start != -1 and end != 0: return text[start:end]
-        return text
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        return text[start:end]
     except:
         return text
 
 # ==========================================
-# 2. ARAYÜZ
+# 5. ARAYÜZ
 # ==========================================
 with st.sidebar:
     st.header("⚙️ Sınıf Durumu")
-    st.info(f"📂 Okunan Öğrenci: **{len(st.session_state.sinif_verileri)}**")
-    if len(st.session_state.sinif_verileri) > 0:
-        if st.button("🚨 Listeyi Sıfırla", type="primary", use_container_width=True):
-            tam_hafiza_temizligi()
-    st.divider()
-    st.caption("Pro Sürüm v7.0 © SİNAN SAYILIR")
+    st.info(f"📂 Okunan Öğrenci: {len(st.session_state.sinif_verileri)}")
+    if st.session_state.sinif_verileri:
+        st.button("🚨 Listeyi Sıfırla", on_click=hafiza_temizle)
+    st.caption("© Sinan SAYILIR")
 
 st.title("🚀 AI Toplu Sınav Okuma")
 st.markdown("---")
 
-col_sol, col_sag = st.columns([1, 1], gap="large")
+col1, col2 = st.columns(2)
 
-with col_sol:
+with col1:
     st.header("1. Sınav Ayarları")
-    ogretmen_promptu = st.text_area("Öğretmen Notu / Puanlama Kriteri:", height=100)
-    
-    sayfa_tipi = st.radio("Her Öğrenci Kaç Sayfa?", ["Tek Sayfa (Sadece Ön)", "Çift Sayfa (Ön + Arka)"], horizontal=True)
-    st.info("💡 Çift sayfa seçerseniz; yüklediğiniz dosyaları 2'şerli gruplar (Ön-Arka) halinde okurum.")
-
-    with st.expander("Cevap Anahtarı (Opsiyonel)"):
-        rubrik_dosyasi = st.file_uploader("Rubrik", type=["jpg", "png", "jpeg"], key="rubrik")
-        rubrik_img = Image.open(rubrik_dosyasi) if rubrik_dosyasi else None
-
-with col_sag:
-    st.header("2. Toplu Yükleme")
-    st.warning("⚠️ Galeriden tüm sınıfın kağıtlarını tek seferde seçebilirsiniz.")
-    
-    uploaded_files = st.file_uploader(
-        "Tüm Sınıfın Kağıtlarını Seç", 
-        type=["jpg", "png", "jpeg"], 
-        accept_multiple_files=True 
+    ogretmen_notu = st.text_area("Öğretmen Notu / Puanlama Kriteri")
+    sayfa_tipi = st.radio(
+        "Her Öğrenci Kaç Sayfa?",
+        ["Tek Sayfa", "Çift Sayfa"],
+        horizontal=True
     )
 
-    if uploaded_files:
-        st.success(f"📚 Toplam **{len(uploaded_files)}** dosya seçildi.")
+with col2:
+    st.header("2. Toplu Yükleme")
+    uploaded_files = st.file_uploader(
+        "Sınav Kağıtları",
+        type=["jpg", "png", "jpeg"],
+        accept_multiple_files=True
+    )
 
 # ==========================================
-# 3. İŞLEM MOTORU
+# 6. İŞLEM
 # ==========================================
 st.markdown("---")
 
-# NOT: Buton yazısı artık görünecek çünkü CSS düzeltildi.
-if st.button("🚀 KAĞITLARI OKU VE PUANLA", type="primary", use_container_width=True):
-    if not SABIT_API_KEY:
-        st.error("API Anahtarı Eksik!")
-    elif not uploaded_files:
-        st.warning("Hiç dosya seçmediniz.")
-    else:
-        # --- MODEL SEÇİMİ ---
-        # ÖNEMLİ: Eğer hala 404 alıyorsan, API Key'in faturasız projeye aittir.
-        genai.configure(api_key=SABIT_API_KEY)
-        model = genai.GenerativeModel("gemini-flash-latest") 
+if st.button("🚀 KAĞITLARI OKU VE PUANLA", use_container_width=True):
+    if not uploaded_files:
+        st.warning("Dosya seçilmedi")
+        st.stop()
 
-        # --- GRUPLAMA MANTIĞI ---
-        is_paketleri = []
-        adim = 2 if "Çift" in sayfa_tipi else 1
-        sorted_files = sorted(uploaded_files, key=lambda x: x.name)
+    adim = 2 if sayfa_tipi == "Çift Sayfa" else 1
+    files = sorted(uploaded_files, key=lambda x: x.name)
 
-        for i in range(0, len(sorted_files), adim):
-            paket = sorted_files[i : i + adim]
-            if len(paket) == adim:
-                img_paket = [Image.open(f) for f in paket]
-                is_paketleri.append(img_paket)
+    paketler = [
+        files[i:i + adim]
+        for i in range(0, len(files), adim)
+        if len(files[i:i + adim]) == adim
+    ]
 
-        # --- İŞLEME BAŞLIYOR ---
-        progress_bar = st.progress(0)
-        durum_text = st.empty()
-        
-        toplam_paket = len(is_paketleri)
-        basarili = 0
+    progress = st.progress(0)
+    durum = st.empty()
 
-        for index, images in enumerate(is_paketleri):
-            durum_text.write(f"⏳ Okunuyor: {index + 1}. Öğrenci / {toplam_paket}...")
-            
-            try:
-                prompt = ["""
-                Bu bir sınav kağıdıdır.
-                1. Ön yüzdeki İsim, Soyad ve Numarayı bul.
-                2. Tüm soruları puanla.
-                3. Çıktıyı SADECE JSON ver.
-                { "kimlik": {"ad_soyad": "...", "numara": "..."}, "degerlendirme": [{"no":"1", "soru":"...", "cevap":"...", "puan":0, "tam_puan":10, "yorum":"..."}] }
-                """]
-                
-                if ogretmen_promptu: prompt.append(f"NOT: {ogretmen_promptu}")
-                if rubrik_img: prompt.extend(["CEVAP ANAHTARI:", rubrik_img])
-                prompt.append("KAĞITLAR:")
-                prompt.extend(images)
+    for i, paket in enumerate(paketler):
+        durum.write(f"📄 {i+1}/{len(paketler)} okunuyor...")
 
-                response = model.generate_content(prompt)
-                json_text = extract_json(response.text)
-                data = json.loads(json_text)
-                
-                kimlik = data.get("kimlik", {})
-                sorular = data.get("degerlendirme", [])
-                toplam_puan = sum([float(x.get('puan', 0)) for x in sorular])
-                
-                kayit = {"Ad Soyad": kimlik.get("ad_soyad", f"Öğrenci {index+1}"), 
-                         "Numara": kimlik.get("numara", "-"), 
-                         "Toplam Puan": toplam_puan}
-                
-                for s in sorular: kayit[f"Soru {s.get('no')}"] = s.get('puan', 0)
-                
-                st.session_state.sinif_verileri.append(kayit)
-                basarili += 1
+        images = [Image.open(f) for f in paket]
 
-            except Exception as e:
-                st.error(f"⚠️ {index+1}. Öğrenci okunamadı. Hata: {e}")
-                # Eğer 404 hatası alırsan, model adını listeden bildiğimiz bir modelle değiştirmeyi deneyebilirsin.
-                # Ama en doğrusu yeni API Key almaktır.
-            
-            progress_bar.progress((index + 1) / toplam_paket)
-            time.sleep(1) # Ne olur ne olmaz biraz nefes alsın
+        content = [
+            {
+                "type": "text",
+                "text": f"""
+Bu bir sınav kağıdıdır.
 
-        durum_text.success(f"✅ İşlem Tamamlandı! {basarili}/{toplam_paket} öğrenci sisteme eklendi.")
-        st.balloons()
-        st.info("Detaylı sonuçlar için 'Analiz Tablosu'na gidiniz.")
+- İsim Soyisim ve numarayı bul
+- Soruları puanla
+- SADECE JSON ver
+
+JSON formatı:
+{{
+ "kimlik": {{ "ad_soyad": "", "numara": "" }},
+ "degerlendirme": [
+   {{ "no": "1", "puan": 0, "tam_puan": 10 }}
+ ]
+}}
+
+Öğretmen Notu:
+{ogretmen_notu}
+"""
+            }
+        ]
+
+        for img in images:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_to_base64(img)}"
+                }
+            })
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": content}],
+                max_tokens=800
+            )
+
+            text = response.choices[0].message.content
+            data = json.loads(extract_json(text))
+
+            kimlik = data.get("kimlik", {})
+            sorular = data.get("degerlendirme", [])
+
+            toplam = sum(float(s.get("puan", 0)) for s in sorular)
+
+            kayit = {
+                "Ad Soyad": kimlik.get("ad_soyad", f"Öğrenci {i+1}"),
+                "Numara": kimlik.get("numara", "-"),
+                "Toplam Puan": toplam
+            }
+
+            for s in sorular:
+                kayit[f"Soru {s.get('no')}"] = s.get("puan", 0)
+
+            st.session_state.sinif_verileri.append(kayit)
+
+        except Exception as e:
+            st.error(f"❌ {i+1}. öğrenci okunamadı: {e}")
+
+        progress.progress((i + 1) / len(paketler))
+        time.sleep(0.5)
+
+    st.success("✅ Tüm işlemler tamamlandı")
+    st.balloons()
