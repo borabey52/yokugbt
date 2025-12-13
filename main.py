@@ -1,137 +1,140 @@
 import streamlit as st
+import google.generativeai as genai
 from PIL import Image
-import pandas as pd
 import json
 import time
-import base64
-import io
-from openai import OpenAI
 
-# ==========================================
-# 1. SAYFA AYARLARI
-# ==========================================
+# =====================================================
+# 1. SAYFA AYARLARI & TASARIM
+# =====================================================
 st.set_page_config(page_title="AI Toplu Sınav Okuma", layout="wide")
-st.title("🚀 AI Toplu Sınav Okuma ve Puanlama Sistemi")
-st.markdown("---")
 
-# ==========================================
-# 2. API BAĞLANTISI
-# ==========================================
-if "OPENAI_API_KEY" not in st.secrets:
-    st.error("❌ OPENAI_API_KEY bulunamadı (Streamlit secrets)")
-    st.stop()
+st.markdown("""
+<style>
+h1 {font-size:2.4rem !important; font-weight:800; color:#1E3A8A;}
+</style>
+""", unsafe_allow_html=True)
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# =====================================================
+# 2. API KEY
+# =====================================================
+if "GOOGLE_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+else:
+    API_KEY = ""
 
-# ==========================================
-# 3. YARDIMCI FONKSİYONLAR
-# ==========================================
-def image_to_base64(img: Image.Image) -> str:
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="JPEG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-def hafizayi_sil():
-    st.session_state.sinif_verileri = []
-    st.success("🧹 Tüm sınıf verileri silindi")
-    st.rerun()
-
-# ==========================================
-# 4. SESSION STATE
-# ==========================================
+# =====================================================
+# 3. HAFIZA
+# =====================================================
 if "sinif_verileri" not in st.session_state:
     st.session_state.sinif_verileri = []
 
-# ==========================================
-# 5. SOL MENÜ
-# ==========================================
+def hafiza_temizle():
+    st.session_state.sinif_verileri = []
+    st.success("Sınıf listesi temizlendi")
+    st.rerun()
+
+# =====================================================
+# 4. YARDIMCI FONKSİYON
+# =====================================================
+def temiz_json(text):
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
+    return text.strip()
+
+# =====================================================
+# 5. ARAYÜZ
+# =====================================================
 with st.sidebar:
-    st.header("⚙️ Sınıf Durumu")
-    st.info(f"📂 Okunan Öğrenci Sayısı: {len(st.session_state.sinif_verileri)}")
-
+    st.header("📊 Sınıf Durumu")
+    st.info(f"Okunan öğrenci: {len(st.session_state.sinif_verileri)}")
     if st.session_state.sinif_verileri:
-        if st.button("🚨 Listeyi Sıfırla"):
-            hafizayi_sil()
-
-    st.divider()
+        if st.button("🗑️ Listeyi Sıfırla"):
+            hafiza_temizle()
     st.caption("© Sinan Sayılır")
 
-# ==========================================
-# 6. AYARLAR
-# ==========================================
+st.title("🚀 AI Toplu Sınav Okuma ve Değerlendirme")
+st.divider()
+
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("1️⃣ Sınav Ayarları")
+    st.subheader("1️⃣ Değerlendirme Ayarları")
     ogretmen_notu = st.text_area(
         "Öğretmen Notu / Puanlama Kriteri",
-        placeholder="Her soru 10 puan. Yazım hatası -1 puan vb.",
+        placeholder="Her soru 10 puan. Kavram doğruysa yarım puan verilebilir.",
         height=120
     )
 
     sayfa_tipi = st.radio(
-        "Her öğrenci kaç sayfa?",
+        "Öğrenci Kaç Sayfa?",
         ["Tek Sayfa", "Çift Sayfa (Ön + Arka)"],
         horizontal=True
     )
 
-    with st.expander("📌 Cevap Anahtarı (Opsiyonel)"):
-        cevap_anahtari = st.file_uploader(
-            "Cevap Anahtarı Yükle",
+    with st.expander("📌 Cevap Anahtarı / Rubrik (Opsiyonel)"):
+        rubrik_dosya = st.file_uploader(
+            "Cevap anahtarı yükle",
             type=["jpg", "png", "jpeg"]
         )
-        cevap_img = Image.open(cevap_anahtari) if cevap_anahtari else None
+        rubrik_img = Image.open(rubrik_dosya) if rubrik_dosya else None
 
 with col2:
-    st.subheader("2️⃣ Öğrenci Kağıtları")
+    st.subheader("2️⃣ Sınav Kağıtları")
     uploaded_files = st.file_uploader(
         "Tüm sınıfın kağıtlarını seç",
         type=["jpg", "png", "jpeg"],
         accept_multiple_files=True
     )
-
     if uploaded_files:
-        st.success(f"📄 {len(uploaded_files)} dosya yüklendi")
+        st.success(f"{len(uploaded_files)} dosya yüklendi")
 
-# ==========================================
-# 7. OKUMA & PUANLAMA
-# ==========================================
-st.markdown("---")
+# =====================================================
+# 6. İŞLEM
+# =====================================================
+st.divider()
 
 if st.button("🚀 KAĞITLARI OKU VE PUANLA", use_container_width=True):
+    if not API_KEY:
+        st.error("API Key eksik")
+        st.stop()
 
     if not uploaded_files:
-        st.warning("Dosya yüklemediniz.")
+        st.warning("Kağıt yüklenmedi")
         st.stop()
+
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     adim = 2 if "Çift" in sayfa_tipi else 1
     dosyalar = sorted(uploaded_files, key=lambda x: x.name)
 
-    gruplar = [
-        dosyalar[i:i + adim]
-        for i in range(0, len(dosyalar), adim)
-        if len(dosyalar[i:i + adim]) == adim
-    ]
+    paketler = []
+    for i in range(0, len(dosyalar), adim):
+        if len(dosyalar[i:i+adim]) == adim:
+            paketler.append([Image.open(f) for f in dosyalar[i:i+adim]])
 
     progress = st.progress(0)
     durum = st.empty()
 
-    for i, grup in enumerate(gruplar):
-        durum.write(f"⏳ {i+1}. öğrenci okunuyor...")
+    for i, img_paket in enumerate(paketler):
+        durum.write(f"📄 {i+1}. öğrenci okunuyor...")
 
-        images = [Image.open(f) for f in grup]
+        try:
+            prompt = f"""
+Bu bir öğrencinin sınav kağıdıdır.
 
-        prompt = f"""
-Bu bir sınav kağıdıdır.
-
-GÖREVLER:
-1. Öğrencinin ad-soyad ve numarasını bul.
-2. Tüm soruları değerlendir.
-3. Her soru için puan ver.
-4. Toplam puanı hesapla.
+DEĞERLENDİRME ZORUNLU ADIMLARI:
+1. Soruyu oku ve anla.
+2. O soru için DOĞRU CEVABI SEN ÜRET.
+3. Öğrencinin cevabını oku.
+4. Doğru cevap ile karşılaştır.
+5. Akademik doğruluğa göre puan ver.
 
 PUANLAMA KRİTERİ:
-{ogretmen_notu if ogretmen_notu else "Her soruyu eşit değerlendir."}
+{ogretmen_notu if ogretmen_notu else "Her soru tam puan üzerinden değerlendirilecektir."}
 
 ÇIKTIYI SADECE JSON OLARAK VER:
 
@@ -141,82 +144,61 @@ PUANLAMA KRİTERİ:
     "numara": ""
   }},
   "sorular": [
-    {{ "no": 1, "puan": 0, "tam_puan": 10 }},
-    {{ "no": 2, "puan": 0, "tam_puan": 10 }}
+    {{
+      "no": 1,
+      "soru": "",
+      "ogrenci_cevabi": "",
+      "dogru_cevap": "",
+      "puan": 0,
+      "tam_puan": 10,
+      "gerekce": ""
+    }}
   ]
 }}
 """
 
-        try:
-            content = [{"type": "input_text", "text": prompt}]
+            content = [prompt]
 
-            if cevap_img:
-                content.append({
-                    "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{image_to_base64(cevap_img)}"
-                })
+            if rubrik_img:
+                content.append("CEVAP ANAHTARI:")
+                content.append(rubrik_img)
 
-            for img in images:
-                content.append({
-                    "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{image_to_base64(img)}"
-                })
+            content.append("SINAV KAĞIDI:")
+            content.extend(img_paket)
 
-            response = client.responses.create(
-                model="gpt-4.1",
-                input=[{
-                    "role": "user",
-                    "content": content
-                }]
-            )
+            response = model.generate_content(content)
+            json_text = temiz_json(response.text)
+            veri = json.loads(json_text)
 
-            raw = response.output_text
-            json_text = raw[raw.find("{"): raw.rfind("}") + 1]
-            data = json.loads(json_text)
+            kimlik = veri.get("kimlik", {})
+            sorular = veri.get("sorular", [])
 
-            kimlik = data["kimlik"]
-            sorular = data["sorular"]
+            toplam = sum(float(s["puan"]) for s in sorular)
 
             kayit = {
                 "Ad Soyad": kimlik.get("ad_soyad", f"Öğrenci {i+1}"),
                 "Numara": kimlik.get("numara", "-"),
+                "Toplam Puan": toplam
             }
 
-            toplam = 0
             for s in sorular:
                 kayit[f"Soru {s['no']}"] = s["puan"]
-                toplam += s["puan"]
 
-            kayit["Toplam Puan"] = toplam
             st.session_state.sinif_verileri.append(kayit)
 
         except Exception as e:
-            st.error(f"{i+1}. öğrenci okunamadı: {e}")
+            st.error(f"{i+1}. öğrenci okunamadı → {e}")
 
-        progress.progress((i + 1) / len(gruplar))
+        progress.progress((i+1) / len(paketler))
         time.sleep(0.5)
 
-    durum.success("✅ Tüm kağıtlar işlendi")
+    st.success("✅ Tüm kağıtlar işlendi")
+    st.balloons()
 
-# ==========================================
-# 8. PUAN ÇİZELGESİ
-# ==========================================
+# =====================================================
+# 7. SONUÇ TABLOSU
+# =====================================================
 if st.session_state.sinif_verileri:
-    st.markdown("## 📊 Değerlendirme Çizelgesi")
-
-    df = pd.DataFrame(st.session_state.sinif_verileri)
-
-    soru_cols = sorted(
-        [c for c in df.columns if c.startswith("Soru")],
-        key=lambda x: int(x.split()[1])
-    )
-
-    df = df[["Ad Soyad", "Numara"] + soru_cols + ["Toplam Puan"]]
-
-    st.dataframe(df, use_container_width=True)
-
-    st.download_button(
-        "📥 Excel olarak indir",
-        df.to_excel(index=False, engine="openpyxl"),
-        file_name="sinav_sonuclari.xlsx"
-    )
+    st.divider()
+    st.subheader("📊 Sınıf Puan Çizelgesi")
+    st.dataframe(st.session_state.sinif_verileri, use_container_width=True)
