@@ -80,6 +80,10 @@ def kamera_durumunu_degistir():
 
 # OpenAI için PIL görüntüsünü Base64 string'e çeviren fonksiyon
 def pil_to_base64_url(img):
+    # Eğer resim RGBA (saydam) ise RGB'ye çevir (JPEG hatasını önler)
+    if img.mode == 'RGBA':
+        img = img.convert('RGB')
+        
     buffered = io.BytesIO()
     img.save(buffered, format="JPEG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
