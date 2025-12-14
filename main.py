@@ -1,5 +1,5 @@
 import streamlit as st
-from openai import OpenAI  # OpenAI kütüphanesi eklendi
+from openai import OpenAI
 from PIL import Image
 import json
 import time
@@ -14,7 +14,7 @@ st.set_page_config(page_title="OkutAİ - Akıllı Sınav Okuma", layout="wide", 
 
 st.markdown("""
     <style>
-    /* --- GÖRSEL EŞİTLEME (HER ŞEY AYNI BOYUT VE KALINLIKTA) --- */
+    /* --- GÖRSEL EŞİTLEME & TASARIM --- */
     .stTextArea label, .stRadio label, .stFileUploader label p {
         font-size: 16px !important;
         font-weight: 600 !important;
@@ -60,7 +60,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# API Anahtarı
+# API Anahtarı Kontrolü
 if "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
 else:
@@ -78,9 +78,9 @@ def tam_hafiza_temizligi():
 def kamera_durumunu_degistir():
     st.session_state.kamera_acik = not st.session_state.kamera_acik
 
-# OpenAI için PIL görüntüsünü Base64 string'e çeviren fonksiyon
+# --- GÖRSEL İŞLEME (HATA DÜZELTİLDİ) ---
 def pil_to_base64_url(img):
-    # Eğer resim RGBA (saydam) ise RGB'ye çevir (JPEG hatasını önler)
+    # RGBA (Saydamlık) varsa RGB'ye çevir ki JPEG hatası vermesin
     if img.mode == 'RGBA':
         img = img.convert('RGB')
         
@@ -89,11 +89,13 @@ def pil_to_base64_url(img):
     img_str = base64.b64encode(buffered.getvalue()).decode()
     return f"data:image/jpeg;base64,{img_str}"
 
-# Dosya yolundan okumak için (Logo vb.)
 def get_img_as_base64(file):
-    with open(file, "rb") as f:
-        data = f.read()
-    return base64.b64encode(data).decode()
+    try:
+        with open(file, "rb") as f:
+            data = f.read()
+        return base64.b64encode(data).decode()
+    except:
+        return ""
 
 # ==========================================
 # 2. ARAYÜZ (HEADER)
@@ -106,20 +108,23 @@ with st.sidebar:
         if st.button("🚨 Listeyi Sıfırla", type="primary", use_container_width=True):
             tam_hafiza_temizligi()
     st.divider()
-    st.caption("OkutAİ v1.0 (OpenAI Edition)")
+    st.caption("OkutAİ v1.1 (OpenAI Edition)")
 
-# --- ANA SAYFA LOGO & SLOGAN ---
+# --- ANA SAYFA LOGO ---
 try:
     img_base64 = get_img_as_base64("okutai_logo.png") 
-    st.markdown(
-        f"""
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
-            <img src="data:image/png;base64,{img_base64}" width="400" style="margin-bottom: 5px;">
-            <h3 style='color: #002D62; margin: 0; font-size: 1.5rem; font-weight: 800;'>Sınav okumanın Akıllı Yolu</h3>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    if img_base64:
+        st.markdown(
+            f"""
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                <img src="data:image/png;base64,{img_base64}" width="400" style="margin-bottom: 5px;">
+                <h3 style='color: #002D62; margin: 0; font-size: 1.5rem; font-weight: 800;'>Sınav okumanın Akıllı Yolu</h3>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        raise Exception("Logo yok")
 except:
     st.markdown("""
         <h1 style='text-align: center; color: #002D62;'>Okut<span style='color: #00aaff;'>Aİ</span></h1>
@@ -179,11 +184,11 @@ if st.button("🚀 KAĞITLARI OKUT VE PUANLA", type="primary", use_container_wid
     if camera_file: tum_gorseller.append(camera_file)
     
     if not api_key:
-        st.error("OpenAI API Anahtarı (secrets) Eksik!")
+        st.error("Lütfen secrets.toml dosyasına 'OPENAI_API_KEY' ekleyin!")
     elif not tum_gorseller:
         st.warning("Lütfen dosya yükleyin veya fotoğraf çekin.")
     else:
-        # OpenAI İstemcisi Başlatılıyor
+        # OpenAI İstemcisi
         client = OpenAI(api_key=api_key)
 
         is_paketleri = []
@@ -205,58 +210,59 @@ if st.button("🚀 KAĞITLARI OKUT VE PUANLA", type="primary", use_container_wid
             durum_text.write(f"⏳ Taranıyor (GPT-4o): {index + 1}. Öğrenci / {toplam_paket}...")
             
             try:
-                # --- PROMPT HAZIRLIĞI ---
-                system_instruction = """Sen uzman bir öğretmensin. Sınav kağıtlarını objektif bir şekilde değerlendirirsin.
-                Çıktıyı SADECE geçerli bir JSON formatında verirsin. Markdown (```json ... ```) kullanma, sadece saf JSON ver."""
+                # --- GÜÇLENDİRİLMİŞ PROMPT (DAHA DETAYLI SONUÇ İÇİN) ---
+                system_instruction = """
+                Sen dünyanın en titiz, en detaycı ve adil öğretmenisin. 
+                Görevin öğrenci kağıtlarını incelemek ve ASLA "özet" geçmeden, her detayı analiz ederek notlandırmak.
+                Çıktıyı SADECE geçerli bir JSON formatında ver. Başka hiçbir metin yazma.
+                """
 
                 user_prompt_text = f"""
-                Bu bir sınav kağıdıdır. Görevin öğrenciyi değerlendirmek.
+                GÖREV: Bu bir sınav kağıdıdır. Öğrenciyi değerlendir.
                 
-                PUANLAMA ALGORİTMASI (ÖNEMLİ):
-                Her soru için "tam_puan" değerini şu öncelik sırasına göre belirle:
-                1. ÖNCELİK (Kağıt Üstü): Eğer kağıtta sorunun yanında puan değeri yazıyorsa (Örn: 10p, 20 puan), o değeri kullan.
-                2. ÖNCELİK (Cevap Anahtarı): Eğer kağıtta puan yazmıyor ama bir Cevap Anahtarı görseli verildiyse, oradaki puanları kullan.
-                3. ÖNCELİK (Otomatik Dağıtım): Hiçbir yerde puan bilgisi yoksa, toplam 100 puanı soru sayısına eşit bölüştür (Örn: 10 soru varsa her biri 10 puan).
+                DİKKAT EDİLECEK KURALLAR (KESİN UYGULA):
+                1. İNCELEME: Öğrencinin yazdığı her kelimeyi dikkatle oku. El yazısı kötüyse bile bağlamdan çıkarmaya çalış.
+                2. YORUMLAMA: "Doğru", "Yanlış" deyip geçme. Neden puan kırdığını veya neden tam puan verdiğini 'yorum' kısmında detaylıca açıkla. Öğrenciye geri bildirim veriyormuş gibi yaz.
+                3. OBJEKTİFLİK: Cevap anahtarı varsa ona sadık kal, yoksa akademik doğruluğa göre puanla.
                 
-                GÖREVLER:
-                1. Ön yüzdeki İsim, Soyad ve Numarayı bul.
-                2. Yukarıdaki algoritmaya göre her sorunun "tam_puan"ını tespit et.
-                3. Öğrenci cevabını oku ve o puan üzerinden notunu ver.
-                4. Çıktıyı SADECE JSON formatında ver.
+                PUANLAMA ALGORİTMASI:
+                1. Kağıt üzerinde soru puanı yazıyorsa onu kullan.
+                2. Cevap anahtarı görseli varsa oradaki puanı kullan.
+                3. Hiçbiri yoksa puanları soru sayısına eşit bölüştür.
                 
-                EKSTRA NOT: {ogretmen_promptu if ogretmen_promptu else 'Yok'}
+                EKSTRA ÖĞRETMEN NOTU: {ogretmen_promptu if ogretmen_promptu else 'Yok'}
                 
                 İSTENEN JSON FORMATI:
                 {{ "kimlik": {{"ad_soyad": "...", "numara": "..."}}, "degerlendirme": [{{"no":"1", "soru":"...", "cevap":"...", "puan":0, "tam_puan":20, "yorum":"..."}}] }}
                 """
 
-                # Mesaj içeriğini oluştur (Multi-modal content)
                 content_list = [{"type": "text", "text": user_prompt_text}]
 
-                # Varsa Rubrik Görselini ekle
+                # Rubrik Ekleme
                 if rubrik_img:
-                    content_list.append({"type": "text", "text": "AŞAĞIDAKİ GÖRSEL CEVAP ANAHTARIDIR (RUBRİK):"})
+                    content_list.append({"type": "text", "text": "REFERANS ALINACAK CEVAP ANAHTARI (RUBRİK):"})
                     content_list.append({
                         "type": "image_url",
                         "image_url": {"url": pil_to_base64_url(rubrik_img)}
                     })
 
-                # Öğrenci Kağıtlarını ekle
-                content_list.append({"type": "text", "text": "AŞAĞIDAKİ GÖRSELLER ÖĞRENCİNİN SINAV KAĞIDIDIR:"})
+                # Öğrenci Kağıdı Ekleme
+                content_list.append({"type": "text", "text": "DEĞERLENDİRİLECEK ÖĞRENCİ KAĞIDI:"})
                 for img in images:
                     content_list.append({
                         "type": "image_url",
                         "image_url": {"url": pil_to_base64_url(img)}
                     })
 
-                # --- OPENAI ÇAĞRISI ---
+                # --- GPT ÇAĞRISI ---
                 response = client.chat.completions.create(
-                    model="gpt-4o", # Görsel için en iyi model
+                    model="gpt-4o",
                     messages=[
                         {"role": "system", "content": system_instruction},
                         {"role": "user", "content": content_list}
                     ],
-                    response_format={"type": "json_object"}, # JSON modu
+                    response_format={"type": "json_object"},
+                    temperature=0.3, # Daha tutarlı ve az "halüsinasyonlu" olması için düşürdük
                     max_tokens=4000
                 )
 
@@ -281,12 +287,12 @@ if st.button("🚀 KAĞITLARI OKUT VE PUANLA", type="primary", use_container_wid
                 basarili += 1
 
             except Exception as e:
-                st.error(f"⚠️ Hata: {e}")
+                st.error(f"⚠️ Hata oluştu (Öğrenci {index+1}): {e}")
             
             progress_bar.progress((index + 1) / toplam_paket)
-            time.sleep(1)
+            time.sleep(0.5)
 
-        durum_text.success(f"✅ Tamamlandı! {basarili} kağıt okutuldu.")
+        durum_text.success(f"✅ Tamamlandı! {basarili} kağıt başarıyla okundu.")
         st.balloons()
         time.sleep(1)
         st.rerun()
