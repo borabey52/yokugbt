@@ -1,178 +1,344 @@
 import streamlit as st
-from openai import OpenAI
+from openai import OpenAI  # OpenAI kütüphanesi eklendi
 from PIL import Image
-import base64, io, json, time
+import json
+import time
+import pandas as pd
+import io
+import base64
 
-# =========================
-# SAYFA AYARLARI
-# =========================
-st.set_page_config(page_title="AI Sınav Okuma", layout="wide")
-st.title("🧠 AI Toplu Sınav Okuma ve Puanlama")
+# ==========================================
+# 1. AYARLAR & TASARIM
+# ==========================================
+st.set_page_config(page_title="OkutAİ - Akıllı Sınav Okuma", layout="wide", page_icon="📑")
 
-# =========================
-# API KEY
-# =========================
+st.markdown("""
+    <style>
+    /* --- GÖRSEL EŞİTLEME (HER ŞEY AYNI BOYUT VE KALINLIKTA) --- */
+    .stTextArea label, .stRadio label, .stFileUploader label p {
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        color: #31333F !important;
+    }
+    .stTabs button {
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        color: #31333F !important;
+    }
+    [data-testid="stFileUploaderDropzone"] button {
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        color: #31333F !important;
+    }
+    .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+    }
+    header[data-testid="stHeader"] {
+        background-color: transparent;
+    }
+    [data-testid="stSidebarUserContent"] {
+        padding-top: 2rem !important;
+    }
+    [data-testid="stSidebarNav"] a {
+        background-color: #f0f2f6; padding: 15px; border-radius: 10px;
+        margin-bottom: 10px; text-decoration: none !important;
+        color: #002D62 !important; font-weight: 700; display: block;
+        text-align: center; border: 1px solid #dcdcdc; transition: all 0.3s;
+    }
+    [data-testid="stSidebarNav"] a:hover {
+        background-color: #e6e9ef; transform: scale(1.02);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-color: #b0b0b0;
+    }
+    div[data-testid="stCameraInput"] button { color: transparent !important; }
+    div[data-testid="stCameraInput"] button::after {
+        content: "📸 TARAT"; color: #333; font-weight: bold; position: absolute; left:0; right:0; top:0; bottom:0; display: flex; align-items: center; justify-content: center;
+    }
+    .streamlit-expanderHeader {
+        font-weight: bold; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 5px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# API Anahtarı
 if "OPENAI_API_KEY" in st.secrets:
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    api_key = st.secrets["OPENAI_API_KEY"]
 else:
-    st.error("OPENAI_API_KEY bulunamadı (st.secrets)")
-    st.stop()
+    api_key = ""
 
-# =========================
-# YARDIMCI FONKSİYONLAR
-# =========================
-def image_to_base64(img: Image.Image):
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="JPEG")
-    return base64.b64encode(buf.getvalue()).decode()
+# --- HAFIZA ---
+if 'sinif_verileri' not in st.session_state: st.session_state.sinif_verileri = []
+if 'kamera_acik' not in st.session_state: st.session_state.kamera_acik = False
 
-def temiz_json(text):
-    try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        return json.loads(text[start:end])
-    except:
-        return None
+def tam_hafiza_temizligi():
+    st.session_state.sinif_verileri = []
+    st.toast("🧹 Liste temizlendi!", icon="🗑️")
+    st.rerun()
 
-# =========================
-# HAFIZA
-# =========================
-if "sonuclar" not in st.session_state:
-    st.session_state.sonuclar = []
+def kamera_durumunu_degistir():
+    st.session_state.kamera_acik = not st.session_state.kamera_acik
 
-# =========================
-# ARAYÜZ
-# =========================
+# OpenAI için PIL görüntüsünü Base64 string'e çeviren fonksiyon
+def pil_to_base64_url(img):
+    buffered = io.BytesIO()
+    img.save(buffered, format="JPEG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/jpeg;base64,{img_str}"
+
+# Dosya yolundan okumak için (Logo vb.)
+def get_img_as_base64(file):
+    with open(file, "rb") as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
+# ==========================================
+# 2. ARAYÜZ (HEADER)
+# ==========================================
+
 with st.sidebar:
-    st.header("⚙️ Ayarlar")
-    if st.button("🗑️ Listeyi Sıfırla"):
-        st.session_state.sonuclar = []
+    st.header("⚙️ Durum")
+    st.info(f"📂 Okunan: **{len(st.session_state.sinif_verileri)}**")
+    if len(st.session_state.sinif_verileri) > 0:
+        if st.button("🚨 Listeyi Sıfırla", type="primary", use_container_width=True):
+            tam_hafiza_temizligi()
+    st.divider()
+    st.caption("OkutAİ v1.0 (OpenAI Edition)")
+
+# --- ANA SAYFA LOGO & SLOGAN ---
+try:
+    img_base64 = get_img_as_base64("okutai_logo.png") 
+    st.markdown(
+        f"""
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <img src="data:image/png;base64,{img_base64}" width="400" style="margin-bottom: 5px;">
+            <h3 style='color: #002D62; margin: 0; font-size: 1.5rem; font-weight: 800;'>Sınav okumanın Akıllı Yolu</h3>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+except:
+    st.markdown("""
+        <h1 style='text-align: center; color: #002D62;'>Okut<span style='color: #00aaff;'>Aİ</span></h1>
+        <h3 style='text-align: center;'>Sen Okut, O Puanlasın.</h3>
+        """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ==========================================
+# 3. İŞLEM ALANI
+# ==========================================
+col_sol, col_sag = st.columns([1, 1], gap="large")
+
+with col_sol:
+    st.header("1. Sınav Ayarları")
+    ogretmen_promptu = st.text_area("Öğretmen Notu / Puanlama Kriteri:", height=100, placeholder="Ör: Yazım hataları -1 puan, anlam bütünlüğü önemli...")
+    sayfa_tipi = st.radio("Her Öğrenci Kaç Sayfa?", ["Tek Sayfa (Sadece Ön)", "Çift Sayfa (Ön + Arka)"], horizontal=True)
+    
+    with st.expander("Cevap Anahtarı (Opsiyonel)"):
+        rubrik_dosyasi = st.file_uploader("Cevap Anahtarı Yükle", type=["jpg", "png", "jpeg"], key="rubrik")
+        rubrik_img = Image.open(rubrik_dosyasi) if rubrik_dosyasi else None
+
+with col_sag:
+    st.header("2. Kağıt Yükleme")
+    
+    tab_dosya, tab_kamera = st.tabs(["📂 Dosya Yükle", "📸 Kamera"])
+    
+    uploaded_files = []
+    camera_file = None
+    
+    with tab_dosya:
+        st.info("Galeriden çoklu seçim yapabilirsiniz.")
+        uploaded_files_list = st.file_uploader("Okutulacak Kağıtları Seç", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+        if uploaded_files_list: uploaded_files = uploaded_files_list
+            
+    with tab_kamera:
+        if st.session_state.kamera_acik:
+            if st.button("❌ Kamerayı Kapat", type="secondary", use_container_width=True):
+                kamera_durumunu_degistir()
+                st.rerun()
+            camera_input = st.camera_input("Fotoğrafı Çek")
+            if camera_input: camera_file = camera_input
+        else:
+            if st.button("📸 Kamerayı Başlat", type="primary", use_container_width=True):
+                kamera_durumunu_degistir()
+                st.rerun()
+
+# ==========================================
+# 4. İŞLEM BUTONU VE MOTORU
+# ==========================================
+st.markdown("---")
+
+if st.button("🚀 KAĞITLARI OKUT VE PUANLA", type="primary", use_container_width=True):
+    
+    tum_gorseller = []
+    if uploaded_files: tum_gorseller.extend(uploaded_files)
+    if camera_file: tum_gorseller.append(camera_file)
+    
+    if not api_key:
+        st.error("OpenAI API Anahtarı (secrets) Eksik!")
+    elif not tum_gorseller:
+        st.warning("Lütfen dosya yükleyin veya fotoğraf çekin.")
+    else:
+        # OpenAI İstemcisi Başlatılıyor
+        client = OpenAI(api_key=api_key)
+
+        is_paketleri = []
+        adim = 2 if "Çift" in sayfa_tipi and len(tum_gorseller) > 1 else 1
+        sorted_files = sorted(tum_gorseller, key=lambda x: x.name if hasattr(x, 'name') else "camera")
+
+        for i in range(0, len(sorted_files), adim):
+            paket = sorted_files[i : i + adim]
+            if len(paket) > 0:
+                img_paket = [Image.open(f) for f in paket]
+                is_paketleri.append(img_paket)
+
+        progress_bar = st.progress(0)
+        durum_text = st.empty()
+        toplam_paket = len(is_paketleri)
+        basarili = 0
+
+        for index, images in enumerate(is_paketleri):
+            durum_text.write(f"⏳ Taranıyor (GPT-4o): {index + 1}. Öğrenci / {toplam_paket}...")
+            
+            try:
+                # --- PROMPT HAZIRLIĞI ---
+                system_instruction = """Sen uzman bir öğretmensin. Sınav kağıtlarını objektif bir şekilde değerlendirirsin.
+                Çıktıyı SADECE geçerli bir JSON formatında verirsin. Markdown (```json ... ```) kullanma, sadece saf JSON ver."""
+
+                user_prompt_text = f"""
+                Bu bir sınav kağıdıdır. Görevin öğrenciyi değerlendirmek.
+                
+                PUANLAMA ALGORİTMASI (ÖNEMLİ):
+                Her soru için "tam_puan" değerini şu öncelik sırasına göre belirle:
+                1. ÖNCELİK (Kağıt Üstü): Eğer kağıtta sorunun yanında puan değeri yazıyorsa (Örn: 10p, 20 puan), o değeri kullan.
+                2. ÖNCELİK (Cevap Anahtarı): Eğer kağıtta puan yazmıyor ama bir Cevap Anahtarı görseli verildiyse, oradaki puanları kullan.
+                3. ÖNCELİK (Otomatik Dağıtım): Hiçbir yerde puan bilgisi yoksa, toplam 100 puanı soru sayısına eşit bölüştür (Örn: 10 soru varsa her biri 10 puan).
+                
+                GÖREVLER:
+                1. Ön yüzdeki İsim, Soyad ve Numarayı bul.
+                2. Yukarıdaki algoritmaya göre her sorunun "tam_puan"ını tespit et.
+                3. Öğrenci cevabını oku ve o puan üzerinden notunu ver.
+                4. Çıktıyı SADECE JSON formatında ver.
+                
+                EKSTRA NOT: {ogretmen_promptu if ogretmen_promptu else 'Yok'}
+                
+                İSTENEN JSON FORMATI:
+                {{ "kimlik": {{"ad_soyad": "...", "numara": "..."}}, "degerlendirme": [{{"no":"1", "soru":"...", "cevap":"...", "puan":0, "tam_puan":20, "yorum":"..."}}] }}
+                """
+
+                # Mesaj içeriğini oluştur (Multi-modal content)
+                content_list = [{"type": "text", "text": user_prompt_text}]
+
+                # Varsa Rubrik Görselini ekle
+                if rubrik_img:
+                    content_list.append({"type": "text", "text": "AŞAĞIDAKİ GÖRSEL CEVAP ANAHTARIDIR (RUBRİK):"})
+                    content_list.append({
+                        "type": "image_url",
+                        "image_url": {"url": pil_to_base64_url(rubrik_img)}
+                    })
+
+                # Öğrenci Kağıtlarını ekle
+                content_list.append({"type": "text", "text": "AŞAĞIDAKİ GÖRSELLER ÖĞRENCİNİN SINAV KAĞIDIDIR:"})
+                for img in images:
+                    content_list.append({
+                        "type": "image_url",
+                        "image_url": {"url": pil_to_base64_url(img)}
+                    })
+
+                # --- OPENAI ÇAĞRISI ---
+                response = client.chat.completions.create(
+                    model="gpt-4o", # Görsel için en iyi model
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": content_list}
+                    ],
+                    response_format={"type": "json_object"}, # JSON modu
+                    max_tokens=4000
+                )
+
+                json_text = response.choices[0].message.content
+                data = json.loads(json_text)
+                
+                kimlik = data.get("kimlik", {})
+                sorular = data.get("degerlendirme", [])
+                toplam_puan = sum([float(x.get('puan', 0)) for x in sorular])
+                
+                kayit = {
+                    "Ad Soyad": kimlik.get("ad_soyad", f"Öğrenci {index+1}"), 
+                    "Numara": kimlik.get("numara", "-"), 
+                    "Toplam Puan": toplam_puan,
+                    "Detaylar": sorular
+                }
+                
+                for s in sorular: 
+                    kayit[f"Soru {s.get('no')}"] = s.get('puan', 0)
+
+                st.session_state.sinif_verileri.append(kayit)
+                basarili += 1
+
+            except Exception as e:
+                st.error(f"⚠️ Hata: {e}")
+            
+            progress_bar.progress((index + 1) / toplam_paket)
+            time.sleep(1)
+
+        durum_text.success(f"✅ Tamamlandı! {basarili} kağıt okutuldu.")
+        st.balloons()
+        time.sleep(1)
         st.rerun()
 
-col1, col2 = st.columns(2)
+# ==========================================
+# 5. SONUÇ LİSTESİ
+# ==========================================
+if len(st.session_state.sinif_verileri) > 0:
+    st.markdown("### 📝 Sınıf Sonuçları")
+    
+    for i, ogrenci in enumerate(st.session_state.sinif_verileri):
+        baslik = f"📄 {ogrenci['Ad Soyad']} (No: {ogrenci['Numara']}) | Puan: {int(ogrenci['Toplam Puan'])}"
+        
+        with st.expander(baslik, expanded=False):
+            if "Detaylar" in ogrenci:
+                for soru in ogrenci["Detaylar"]:
+                    puan = soru.get('puan', 0)
+                    tam_puan = soru.get('tam_puan', 0)
+                    
+                    if puan == tam_puan:
+                        renk = "green"; ikon = "✅"
+                    elif puan == 0:
+                        renk = "red"; ikon = "❌"
+                    else:
+                        renk = "orange"; ikon = "⚠️"
+                    
+                    st.markdown(f"**Soru {soru.get('no')}** - {ikon} :{renk}[**{puan}** / {tam_puan}]")
+                    st.info(f"**Öğrenci Cevabı:** {soru.get('cevap')}")
+                    
+                    st.markdown(f"""
+                    <div style="background-color: #f0f8ff; padding: 10px; border-radius: 5px; border-left: 5px solid #002D62; margin-bottom: 5px;">
+                        <span style="font-weight:bold; color:#002D62;">🤖 OkutAİ Yorumu:</span><br>
+                        <span style="font-size: 16px; color: #222;">{soru.get('yorum')}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.divider() 
 
-with col1:
-    ogretmen_notu = st.text_area(
-        "📝 Öğretmen Notu / Puanlama Açıklaması",
-        placeholder="Ör: Yazım hataları -1 puan, anlam bütünlüğü önemli"
-    )
+    # Excel İndirme
+    st.markdown("---")
+    df_excel = pd.DataFrame(st.session_state.sinif_verileri)
+    if "Detaylar" in df_excel.columns: df_excel = df_excel.drop(columns=["Detaylar"])
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_excel.to_excel(writer, index=False, sheet_name='Sonuclar')
+        
+    st.download_button("📥 Excel Olarak İndir", data=output.getvalue(), file_name='OkutAI_Sonuclari.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', type="primary", use_container_width=True)
 
-    cevap_kagidi = st.file_uploader(
-        "📘 Cevap Anahtarı / Rubrik (opsiyonel)",
-        type=["jpg", "jpeg", "png"]
-    )
-
-with col2:
-    ogrenci_kagitlari = st.file_uploader(
-        "📄 Öğrenci Kağıtları (çoklu)",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True
-    )
-
-# =========================
-# OKU VE DEĞERLENDİR
-# =========================
-if st.button("🚀 KAĞITLARI OKU VE DEĞERLENDİR", use_container_width=True):
-
-    if not ogrenci_kagitlari:
-        st.warning("Öğrenci kağıdı yüklemediniz.")
-        st.stop()
-
-    cevap_img = Image.open(cevap_kagidi) if cevap_kagidi else None
-
-    progress = st.progress(0)
-    durum = st.empty()
-
-    for i, dosya in enumerate(ogrenci_kagitlari):
-        durum.write(f"📖 Okunuyor: {dosya.name}")
-
-        ogr_img = Image.open(dosya)
-
-        content = [
-            {
-                "type": "input_text",
-                "text": f"""
-Bu bir sınav kağıdıdır.
-
-GÖREVLERİN:
-1. Öğrencinin cevaplarını oku ve anla
-2. Eğer cevap anahtarı verilmişse onunla karşılaştır
-3. Her sorunun DOĞRU cevabını belirle
-4. Öğrencinin cevabını doğruya göre değerlendir
-5. Soru bazlı puan ver
-6. Toplam puanı hesapla
-
-ÖĞRETMEN NOTU:
-{ogretmen_notu}
-
-SADECE JSON ÇIKTI VER:
-{{
- "ogrenci": {{"ad_soyad":"", "numara":""}},
- "sorular":[
-   {{
-     "no":"1",
-     "dogru_cevap":"...",
-     "ogrenci_cevabi":"...",
-     "puan":0,
-     "tam_puan":10,
-     "yorum":""
-   }}
- ]
-}}
-"""
-            }
-        ]
-
-        if cevap_img:
-            content.append({
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{image_to_base64(cevap_img)}"
-            })
-
-        content.append({
-            "type": "input_image",
-            "image_url": f"data:image/jpeg;base64,{image_to_base64(ogr_img)}"
-        })
-
-        try:
-            response = client.responses.create(
-                model="gpt-4.1",
-                input=[{"role": "user", "content": content}],
-                max_output_tokens=900
-            )
-
-            raw_text = response.output_text
-            data = temiz_json(raw_text)
-
-            if not data:
-                raise ValueError("JSON okunamadı")
-
-            ogr = data["ogrenci"]
-            sorular = data["sorular"]
-            toplam = sum(s["puan"] for s in sorular)
-
-            kayit = {
-                "Ad Soyad": ogr.get("ad_soyad", dosya.name),
-                "Numara": ogr.get("numara", "-"),
-                "Toplam Puan": toplam
-            }
-
-            for s in sorular:
-                kayit[f"Soru {s['no']}"] = s["puan"]
-
-            st.session_state.sonuclar.append(kayit)
-
-        except Exception as e:
-            st.error(f"{dosya.name} okunamadı: {e}")
-
-        progress.progress((i + 1) / len(ogrenci_kagitlari))
-        time.sleep(0.5)
-
-    st.success("✅ Tüm kağıtlar işlendi")
-
-# =========================
-# SONUÇ TABLOSU
-# =========================
-if st.session_state.sonuclar:
-    st.subheader("📊 Sonuç Çizelgesi")
-    st.dataframe(st.session_state.sonuclar, use_container_width=True)
+# Footer
+st.markdown("---")
+st.markdown("""
+    <div style='text-align: center; margin-top: 50px; margin-bottom: 20px; color: #666;'>
+        <p style='font-size: 18px; font-weight: 600;'>
+            © 2024 OkutAİ - Sinan Sayılır tarafından geliştirilmiştir.
+        </p>
+        <p style='font-size: 14px;'>Sınav okumanın Akıllı Yolu</p>
+    </div>
+""", unsafe_allow_html=True)
